@@ -61,8 +61,9 @@ main{display:flex;flex-direction:column;gap:22px;padding-top:8px}
 .gh{display:flex;align-items:center;gap:8px;font-size:.78rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
 .gh .dot{width:9px;height:9px;border-radius:50%}
 .gh .n{font-variant-numeric:tabular-nums;font-weight:400;letter-spacing:0}
-.dayh{font-family:var(--font-display);font-size:1.05rem;font-weight:600;margin:0;color:var(--ink);display:flex;gap:8px;align-items:baseline}
-.dayh small{font-family:var(--font-body);font-size:.85rem;color:var(--muted);font-weight:400}
+.dayh{font-family:var(--font-display);font-size:1.3rem;font-weight:700;margin:0;color:var(--ink);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding-bottom:6px;border-bottom:2px solid var(--accent)}
+.dayh small{font-family:var(--font-body);font-size:.85rem;color:var(--accent);font-weight:700;letter-spacing:.02em}
+.group:has(> .dayh) + .group:has(> .dayh){margin-top:14px}
 
 .decide{background:var(--due-bg);border:1px solid var(--due-line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:10px}
 .decide h2{margin:0;font-family:var(--font-display);font-size:1.1rem;color:var(--due)}
