@@ -461,8 +461,14 @@ import { firebaseConfig } from "./config.js";
     try {
       const res = await fetch(url, { headers: { Authorization: 'Bearer ' + cal.token } });
       if (res.status === 401){ cal.token = null; cal.exp = 0; }
-      else if (res.status === 403){ cal.error = 'perm'; }
-      else if (res.ok){
+      else if (!res.ok){
+        // tell apart "calendar box left unchecked" from a setup problem on Google's side
+        let reason = '', msg = '';
+        try { const j = await res.json(); const e = j.error || {}; reason = (e.errors && e.errors[0] && e.errors[0].reason) || e.status || ''; msg = e.message || ''; } catch(_){}
+        cal.error = /insufficient|SCOPE/i.test(reason + ' ' + msg) ? 'perm' : 'api';
+        cal.errorMsg = (res.status + ' ' + (reason || '') + (msg ? ': ' + msg : '')).slice(0, 220);
+      }
+      if (res.ok){
         const j = await res.json();
         cal.events = (j.items || [])
           .filter(e => e.status !== 'cancelled' && e.start && !(e.attendees || []).some(a => a.self && a.responseStatus === 'declined'))
@@ -529,11 +535,14 @@ import { firebaseConfig } from "./config.js";
     let head = '';
     if (!mini){
       const action = cal.error === 'perm' ? '<button type="button" class="lnk" data-cal="connect">Allow calendar access</button>'
+                   : cal.error === 'api' ? '<button type="button" class="lnk" data-cal="retry">Try again</button>'
                    : stale ? '<button type="button" class="lnk" data-cal="connect">Reconnect</button>' : '';
       head = '<div class="ch">' + calIcon + 'Calendar <span class="n">' + (evs.length || '') + '</span>' + action + '</div>';
     }
     const body = shown.map(r => r.html).join('') ||
-      (mini ? '' : '<div class="none">' + (cal.error === 'perm' ? 'Day List needs permission to read your calendar.' : 'Nothing on your calendar today.') + '</div>');
+      (mini ? '' : '<div class="none">' + (cal.error === 'perm' ? 'Day List needs permission to read your calendar. Tap Allow calendar access and check the calendar box.'
+        : cal.error === 'api' ? 'Google Calendar could not be read. Google says: ' + esc(cal.errorMsg || 'unknown error')
+        : 'Nothing on your calendar today.') + '</div>');
     return '<section class="calstrip' + (mini ? ' mini' : '') + '">' + head + body + more + '</section>';
   }
   function calDaysAhead(){
@@ -545,6 +554,7 @@ import { firebaseConfig } from "./config.js";
     const el = e.target.closest('[data-cal]'); if (!el) return;
     const act = el.dataset.cal;
     if (act === 'connect') calConnect();
+    if (act === 'retry'){ if (calValid()) { cal.error = null; calFetch(); } else calConnect(); }
     if (act === 'dismiss'){ cal.dismissed = true; calSave(); render(); }
     if (act === 'more'){ calExpanded[el.dataset.day] = true; render(); }
     if (act === 'less'){ calExpanded[el.dataset.day] = false; render(); }
