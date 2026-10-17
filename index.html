@@ -160,6 +160,25 @@ body{margin:0}
 .err{color:var(--high)}
 .menu h2{margin:0;font-family:var(--font-display);font-size:1.15rem}
 .menu p{margin:0 0 6px;color:var(--muted);font-size:.9rem;overflow-wrap:anywhere}
+.calstrip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 12px 6px;display:flex;flex-direction:column}
+.calstrip .ch{display:flex;align-items:center;gap:8px;font-size:.78rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-bottom:4px}
+.calstrip .ch svg{flex:none}
+.calstrip .ch .n{font-weight:400;letter-spacing:0;font-variant-numeric:tabular-nums}
+.calstrip .ch .lnk{margin-left:auto;text-transform:none;letter-spacing:0}
+.lnk{border:0;background:transparent;color:var(--accent);font-weight:700;font-size:.85rem;padding:2px 0}
+.ev{display:flex;align-items:baseline;gap:10px;padding:5px 0;border-top:1px solid var(--line);font-size:.93rem}
+.ev:first-of-type{border-top:0}
+.ev .tm{flex:none;width:68px;color:var(--muted);font-variant-numeric:tabular-nums;font-size:.85rem}
+.ev .dt{flex:none;width:7px;height:7px;border-radius:50%;align-self:center;background:var(--cc,var(--muted))}
+.ev .ttl{min-width:0;overflow-wrap:anywhere}
+.ev.past{opacity:.45}
+.ev.now .tm{color:var(--accent);font-weight:700}
+.calstrip .none{color:var(--muted);font-size:.9rem;padding:2px 0 4px}
+.calstrip .more{align-self:flex-start;padding:6px 0 2px}
+.calstrip.mini{padding:4px 10px 2px}
+.calstrip.mini .ev{font-size:.88rem;padding:4px 0}
+.calprompt{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;border:1px dashed var(--line);border-radius:12px;padding:10px 12px;font-size:.9rem;color:var(--muted)}
+.calprompt span{flex:1 1 180px}
 .mi{text-align:left;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:12px;font-weight:700}
 </style>
 </head>
@@ -228,6 +247,7 @@ body{margin:0}
     <button type="button" class="mi" id="miInstall" hidden>Install on this device</button>
     <button type="button" class="mi" id="miExport">Export tasks (backup file)</button>
     <button type="button" class="mi" id="miImport">Import tasks from a backup</button>
+    <button type="button" class="mi" id="miCal" hidden>Connect Google Calendar</button>
     <button type="button" class="mi" id="miReset" hidden>Reset the sample tasks</button>
     <button type="button" class="mi" id="miOut">Sign out</button>
     <input type="file" id="importFile" accept=".json,application/json" hidden>
@@ -236,7 +256,7 @@ body{margin:0}
 </div>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut, reauthenticateWithPopup, reauthenticateWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection as fsCollection, doc as fsDoc, setDoc as fsSetDoc, deleteDoc as fsDeleteDoc, onSnapshot as fsOnSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
@@ -339,6 +359,10 @@ import { firebaseConfig } from "./config.js";
       put(t){ tasks[t.id]=t; render(); const body=Object.assign({},t); delete body.id; fsSetDoc(fsDoc(col, t.id), body).catch(writeErr); },
       remove(id){ delete tasks[id]; render(); fsDeleteDoc(fsDoc(col, id)).catch(writeErr); }
     };
+    calLoad();
+    if (pendingCal && pendingCal.uid === user.uid){ calTokenFrom(pendingCal.result); pendingCal = null; }
+    else calMaybeRefresh();
+    if (calValid() && !cal.fetchedAt) calFetch();
     setAccount();
   }
 
@@ -356,7 +380,7 @@ import { firebaseConfig } from "./config.js";
   async function leave(){
     closeMenu();
     if (mode === 'cloud' && fb){ stopCloud(); await signOut(fb.auth); }
-    mode = null; currentUser = null; tasks = {}; loaded = false; showNotice('');
+    mode = null; currentUser = null; tasks = {}; loaded = false; cal = blankCal(); showNotice('');
     if (location.hash) history.replaceState(null, '', location.pathname);
     showGate();
   }
@@ -365,11 +389,160 @@ import { firebaseConfig } from "./config.js";
     if (location.hash === '#demo'){ startDemo(); }
     if (!configured){ if (mode !== 'demo') showGate(); return; }
     ensureFb();
+    // finish a calendar connection that had to use a full-page redirect instead of a popup
+    let calRedirect = false; try { calRedirect = sessionStorage.getItem('daylist.calRedirect') === '1'; sessionStorage.removeItem('daylist.calRedirect'); } catch(_){}
+    getRedirectResult(fb.auth).then(r => {
+      if (!r || !calRedirect) return;
+      if (mode === 'cloud' && currentUser && currentUser.uid === r.user.uid) calTokenFrom(r);
+      else pendingCal = { uid: r.user.uid, result: r };
+    }).catch(() => {});
     onAuthStateChanged(fb.auth, user => {
       if (user){ if (mode !== 'cloud' || !currentUser || currentUser.uid !== user.uid) startCloud(user); }
       else if (mode !== 'demo'){ stopCloud(); showGate(); }
     });
   }
+
+  // ---------- Google Calendar (read-only) ----------
+  // Appointments from the signed-in person's main Google calendar, shown above their tasks.
+  // Google grants browser apps access for about an hour; after that the strip keeps the last
+  // appointments it loaded and offers a Reconnect button.
+  const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
+  const CAL_COLORS = {1:'#7986cb',2:'#33b679',3:'#8e24aa',4:'#e67c73',5:'#f6bf26',6:'#f4511e',7:'#039be5',8:'#616161',9:'#3f51b5',10:'#0b8043',11:'#d50000'};
+  const CAL_DAYS_AHEAD = 31, CAL_UPCOMING_DAYS = 14, CAL_REFRESH_MS = 15*60000;
+  const calIcon = '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const blankCal = () => ({ connected:false, token:null, exp:0, events:[], fetchedAt:0, error:null, dismissed:false });
+  let cal = blankCal(), calBusy = false, calExpanded = {}, pendingCal = null;
+  const calKey = () => currentUser ? 'daylist.cal.' + currentUser.uid : null;
+  const calValid = () => !!cal.token && Date.now() < cal.exp - 60000;
+  function calLoad(){ cal = blankCal(); calExpanded = {}; const k = calKey(); if (!k) return; try { Object.assign(cal, JSON.parse(localStorage.getItem(k) || '{}')); } catch(e){} }
+  function calSave(){ const k = calKey(); if (!k) return; try { localStorage.setItem(k, JSON.stringify(cal)); } catch(e){} }
+
+  async function calConnect(){
+    if (!ensureFb() || !fb.auth.currentUser) return;
+    const p = new GoogleAuthProvider(); p.addScope(CAL_SCOPE);
+    if (currentUser && currentUser.email) p.setCustomParameters({ login_hint: currentUser.email });
+    try { calTokenFrom(await reauthenticateWithPopup(fb.auth.currentUser, p)); }
+    catch(e){
+      const code = e && e.code;
+      if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment'){
+        try { sessionStorage.setItem('daylist.calRedirect', '1'); } catch(_){}
+        return reauthenticateWithRedirect(fb.auth.currentUser, p);
+      }
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
+      if (code === 'auth/user-mismatch') return toast('Choose the same Google account you signed in with', false);
+      toast('Could not connect your calendar. Try again.', false);
+    }
+  }
+  function calTokenFrom(result){
+    const c = result && GoogleAuthProvider.credentialFromResult(result);
+    if (!c || !c.accessToken) return toast('Could not connect your calendar. Try again.', false);
+    cal.connected = true; cal.dismissed = false; cal.error = null;
+    cal.token = c.accessToken; cal.exp = Date.now() + 55*60000;
+    calSave(); calFetch();
+  }
+  function calDisconnect(){
+    const tok = cal.token;
+    if (tok) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(tok), { method:'POST' }).catch(()=>{});
+    const k = calKey(); try { if (k) localStorage.removeItem(k); } catch(e){}
+    cal = blankCal(); cal.dismissed = true; calSave(); render(); toast('Calendar disconnected', false);
+  }
+  async function calFetch(){
+    if (mode !== 'cloud' || !calValid() || calBusy) { render(); return; }
+    calBusy = true;
+    const from = parse(today()), to = parse(addDays(today(), CAL_DAYS_AHEAD));
+    const url = 'https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&maxResults=250' +
+      '&timeMin=' + encodeURIComponent(from.toISOString()) + '&timeMax=' + encodeURIComponent(to.toISOString());
+    try {
+      const res = await fetch(url, { headers: { Authorization: 'Bearer ' + cal.token } });
+      if (res.status === 401){ cal.token = null; cal.exp = 0; }
+      else if (res.status === 403){ cal.error = 'perm'; }
+      else if (res.ok){
+        const j = await res.json();
+        cal.events = (j.items || [])
+          .filter(e => e.status !== 'cancelled' && e.start && !(e.attendees || []).some(a => a.self && a.responseStatus === 'declined'))
+          .map(e => ({ title: e.summary || '(No title)', allDay: !!e.start.date, start: e.start.dateTime || e.start.date,
+                       end: e.end ? (e.end.dateTime || e.end.date) : null, color: CAL_COLORS[e.colorId] || null }));
+        cal.fetchedAt = Date.now(); cal.error = null;
+      }
+      calSave();
+    } catch(e){ /* offline: keep showing the last appointments loaded */ }
+    calBusy = false; render();
+  }
+  function calMaybeRefresh(){ if (mode === 'cloud' && calValid() && Date.now() - (cal.fetchedAt || 0) > CAL_REFRESH_MS) calFetch(); }
+
+  // sample appointments for the demo, relative to now
+  function demoEvents(){
+    const at = (dayOffset, h, m, mins) => { const d = parse(addDays(today(), dayOffset)); d.setHours(h, m, 0, 0); return [d.toISOString(), new Date(d.getTime() + mins*60000).toISOString()]; };
+    const ev = (title, [start, end], color) => ({ title, allDay:false, start, end, color });
+    return [
+      { title:'Library book sale', allDay:true, start: today(), end: addDays(today(), 1), color:'#33b679' },
+      ev('Morning walk', at(0, 7, 30, 30)),
+      ev('Coffee with Sam', at(0, 10, 30, 60)),
+      ev('Dentist', at(0, 14, 0, 60), '#e67c73'),
+      ev('Team lunch', at(1, 12, 0, 60)),
+      ev('Book club', at(1, 19, 0, 90), '#33b679'),
+      ev('Video interview', at(3, 11, 0, 45))
+    ];
+  }
+  function eventsOn(s){
+    const list = mode === 'demo' ? demoEvents() : (cal.connected ? cal.events : []);
+    return list.filter(e => e.allDay ? (s >= e.start.slice(0,10) && s < (e.end ? e.end.slice(0,10) : addDays(e.start.slice(0,10), 1)))
+                                     : ymd(new Date(e.start)) === s)
+      .sort((a,b) => (b.allDay - a.allDay) || (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  }
+  const fmtTime = iso => new Date(iso).toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' });
+  function calStripHTML(s, mini){
+    const showing = mode === 'demo' || cal.connected;
+    if (!showing){
+      if (mini || mode !== 'cloud' || cal.dismissed) return '';
+      return '<div class="calprompt"><span>See your Google Calendar appointments here.</span>' +
+        '<button type="button" class="lnk" data-cal="connect">Connect calendar</button>' +
+        '<button type="button" class="lnk" data-cal="dismiss" style="color:var(--muted)">Not now</button></div>';
+    }
+    const evs = eventsOn(s), isToday = s === today(), now = Date.now();
+    const stale = mode === 'cloud' && !calValid();
+    if (mini && !evs.length) return '';
+    let nextMarked = false;
+    const rows = evs.map(e => {
+      let cls = '';
+      if (isToday && !e.allDay){
+        const end = new Date(e.end || e.start).getTime();
+        if (end < now) cls = 'past';
+        else if (!nextMarked){ cls = 'now'; nextMarked = true; }
+      }
+      return { cls, html: '<div class="ev ' + cls + '"' + (e.color ? ' style="--cc:' + e.color + '"' : '') + '><span class="tm">' +
+        (e.allDay ? 'All day' : fmtTime(e.start)) + '</span><span class="dt"></span><span class="ttl">' + esc(e.title) + '</span></div>' };
+    });
+    let shown = rows, more = '';
+    if (rows.length > 5 && !calExpanded[s]){
+      shown = rows.filter(r => r.cls !== 'past').slice(0, 4);
+      more = '<button type="button" class="lnk more" data-cal="more" data-day="' + s + '">Show all ' + rows.length + '</button>';
+    } else if (rows.length > 5){
+      more = '<button type="button" class="lnk more" data-cal="less" data-day="' + s + '">Show fewer</button>';
+    }
+    let head = '';
+    if (!mini){
+      const action = cal.error === 'perm' ? '<button type="button" class="lnk" data-cal="connect">Allow calendar access</button>'
+                   : stale ? '<button type="button" class="lnk" data-cal="connect">Reconnect</button>' : '';
+      head = '<div class="ch">' + calIcon + 'Calendar <span class="n">' + (evs.length || '') + '</span>' + action + '</div>';
+    }
+    const body = shown.map(r => r.html).join('') ||
+      (mini ? '' : '<div class="none">' + (cal.error === 'perm' ? 'Day List needs permission to read your calendar.' : 'Nothing on your calendar today.') + '</div>');
+    return '<section class="calstrip' + (mini ? ' mini' : '') + '">' + head + body + more + '</section>';
+  }
+  function calDaysAhead(){
+    const out = []; if (!(mode === 'demo' || cal.connected)) return out;
+    for (let i = 1; i <= CAL_UPCOMING_DAYS; i++){ const d = addDays(today(), i); if (eventsOn(d).length) out.push(d); }
+    return out;
+  }
+  document.getElementById('list').addEventListener('click', e => {
+    const el = e.target.closest('[data-cal]'); if (!el) return;
+    const act = el.dataset.cal;
+    if (act === 'connect') calConnect();
+    if (act === 'dismiss'){ cal.dismissed = true; calSave(); render(); }
+    if (act === 'more'){ calExpanded[el.dataset.day] = true; render(); }
+    if (act === 'less'){ calExpanded[el.dataset.day] = false; render(); }
+  });
 
   // ---------- account menu: install, backup, sign out ----------
   const menuwrap = document.getElementById('menuwrap');
@@ -380,6 +553,9 @@ import { firebaseConfig } from "./config.js";
     document.getElementById('menuTitle').textContent = demo ? 'Demo mode' : 'Your account';
     document.getElementById('menuWho').textContent = demo ? 'Sample tasks, saved only on this device.' : (currentUser ? (currentUser.email || currentUser.displayName || '') : '');
     document.getElementById('miReset').hidden = !demo;
+    const miCal = document.getElementById('miCal');
+    miCal.hidden = mode !== 'cloud';
+    miCal.textContent = cal.connected ? 'Disconnect Google Calendar' : 'Connect Google Calendar';
     document.getElementById('miOut').textContent = demo ? 'Leave the demo' : 'Sign out';
     document.getElementById('miInstall').hidden = !installEvt;
     const av = document.getElementById('acct');
@@ -392,6 +568,7 @@ import { firebaseConfig } from "./config.js";
   menuwrap.addEventListener('click', e => { if (e.target === menuwrap) closeMenu(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menuwrap.hidden) closeMenu(); });
   document.getElementById('miOut').addEventListener('click', leave);
+  document.getElementById('miCal').addEventListener('click', () => { closeMenu(); if (cal.connected) calDisconnect(); else calConnect(); });
   document.getElementById('miReset').addEventListener('click', () => { closeMenu(); resetDemo(); });
   document.getElementById('miInstall').addEventListener('click', async () => {
     if (!installEvt) return; closeMenu(); installEvt.prompt(); try { await installEvt.userChoice; } catch(e){} installEvt = null; setAccount();
@@ -694,26 +871,28 @@ import { firebaseConfig } from "./config.js";
 
     let h = '';
     if (view==='today'){
+      h += calStripHTML(t0, false);
       if (b.overdue.length){
         h += '<section class="decide"><h2>Needs a decision · '+b.overdue.length+'</h2><p>These were scheduled earlier and not finished. Each one stays here until you choose what happens to it.</p>'+
           b.overdue.map(t=>taskHTML(t,'overdue')).join('')+'</section>';
       }
       h += prioGroups(b.today,'today');
       if (!b.today.length && !b.overdue.length){
-        h += '<div class="empty"><strong>'+(b.doneToday?'Today is clear':'Nothing scheduled today')+'</strong>'+
+        h += '<div class="empty"><strong>'+(b.doneToday?'Today is clear':'No tasks today')+'</strong>'+
           (b.doneToday?'<span>'+b.doneToday+' finished today.</span>':'<span>Type a task below and tap Today.</span>')+'</div>';
       } else if (b.doneToday){
         h += '<p class="meta" style="justify-content:center">'+b.doneToday+' finished today</p>';
       }
     } else if (view==='upcoming'){
-      if (!b.upcoming.length) h = '<div class="empty"><strong>Nothing upcoming</strong><span>Tap Tomorrow or Pick day when adding a task.</span></div>';
+      const days = {};
+      b.upcoming.forEach(t=>{ (days[t.date]=days[t.date]||[]).push(t); });
+      calDaysAhead().forEach(d=>{ days[d] = days[d] || []; });
+      if (!Object.keys(days).length) h = '<div class="empty"><strong>Nothing upcoming</strong><span>Tap Tomorrow or Pick day when adding a task.</span></div>';
       else {
-        const days = {};
-        b.upcoming.forEach(t=>{ (days[t.date]=days[t.date]||[]).push(t); });
         h = Object.keys(days).sort().map(d=>{
           const n = daysBetween(t0,d);
           const rel = n===1?'Tomorrow':'In '+n+' days';
-          return '<section class="group" style="gap:12px"><h3 class="dayh">'+fmtDay(d)+' <small>'+rel+'</small></h3>'+prioGroups(days[d],'upcoming')+'</section>';
+          return '<section class="group" style="gap:12px"><h3 class="dayh">'+fmtDay(d)+' <small>'+rel+'</small></h3>'+calStripHTML(d, true)+(days[d].length?prioGroups(days[d],'upcoming'):'')+'</section>';
         }).join('');
       }
     } else {
@@ -926,7 +1105,7 @@ import { firebaseConfig } from "./config.js";
 
   // re-check the date when the app comes back to the foreground (handles midnight rollover)
   let lastDay = today();
-  function checkDay(){ if (today()!==lastDay){ lastDay=today(); if (store && loaded) maintainAll(); } render(); }
+  function checkDay(){ if (today()!==lastDay){ lastDay=today(); if (store && loaded) maintainAll(); calExpanded = {}; if (mode==='cloud' && calValid()) cal.fetchedAt = 0; } calMaybeRefresh(); render(); }
   document.addEventListener('visibilitychange',()=>{ if(!document.hidden) checkDay(); });
   setInterval(()=>{ if(!document.hidden) checkDay(); }, 60000);
 
