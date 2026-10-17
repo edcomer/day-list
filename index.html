@@ -421,7 +421,12 @@ import { firebaseConfig } from "./config.js";
   async function calConnect(){
     if (!ensureFb() || !fb.auth.currentUser) return;
     const p = new GoogleAuthProvider(); p.addScope(CAL_SCOPE);
-    if (currentUser && currentUser.email) p.setCustomParameters({ login_hint: currentUser.email });
+    // Ask Google to show the full permission screen when first connecting, or when calendar access
+    // was left unchecked last time; otherwise Google reuses the earlier answer and closes at once.
+    const params = {};
+    if (currentUser && currentUser.email) params.login_hint = currentUser.email;
+    if (!cal.connected || cal.error === 'perm') params.prompt = 'consent';
+    p.setCustomParameters(params);
     try { calTokenFrom(await reauthenticateWithPopup(fb.auth.currentUser, p)); }
     catch(e){
       const code = e && e.code;
