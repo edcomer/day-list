@@ -88,6 +88,10 @@ body.is-dragging{user-select:none;-webkit-user-select:none}
 .meta .late{color:var(--due);font-weight:700}
 .chev{flex:none;color:var(--muted);transition:transform .15s}
 .task.open .chev{transform:rotate(90deg)}
+.task.is-done{opacity:.6;box-shadow:none}
+.task.is-done .ttitle{text-decoration:line-through;color:var(--muted)}
+.task.is-done .check{background:var(--pc);color:var(--surface)}
+.task.is-done.open{opacity:1}
 .chevbtn{flex:none;border:0;background:transparent;padding:6px;margin:-6px -8px -6px -4px;border-radius:8px;display:grid;place-items:center}
 .chevbtn:hover{background:var(--accent-soft)}
 .detail{border-top:1px solid var(--line);padding:12px;display:flex;flex-direction:column;gap:12px}
@@ -113,7 +117,7 @@ textarea{width:100%;min-height:72px;border:1px solid var(--line);border-radius:1
 .pb[aria-pressed="true"][data-p="high"]{background:var(--high);border-color:var(--high);color:var(--surface)}
 .pb[aria-pressed="true"][data-p="med"]{background:var(--med);border-color:var(--med);color:var(--surface)}
 .pb[aria-pressed="true"][data-p="low"]{background:var(--low);border-color:var(--low);color:var(--surface)}
-.when{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:6px}
+.when{display:grid;grid-template-columns:1fr 1fr 1fr 1.3fr;gap:6px}
 .wb{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 2px;font-weight:700;font-size:.88rem;position:relative;overflow:hidden}
 .wb[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .addbtn{flex:none;border:0;border-radius:11px;padding:0 18px;background:var(--accent);color:var(--accent-ink);font-weight:700}
@@ -219,10 +223,10 @@ body{margin:0}
       <button type="button" class="pb" data-p="low" aria-pressed="false">Low</button>
     </div>
     <div class="when" role="group" aria-label="Day">
-      <button type="button" class="wb" data-when="none" aria-pressed="true">Unscheduled</button>
       <button type="button" class="wb" data-when="today" aria-pressed="false">Today</button>
       <button type="button" class="wb" data-when="tomorrow" aria-pressed="false">Tomorrow</button>
       <button type="button" class="wb" id="pickLabel" aria-pressed="false"><span id="pickText">Pick day</span></button>
+      <button type="button" class="wb" data-when="none" aria-pressed="true">Unscheduled</button>
     </div>
   </form>
 </div>
@@ -734,6 +738,16 @@ import { firebaseConfig } from "./config.js";
       update(x.id, patch);
     });
   }
+  function markNotDone(id){
+    const t = tasks[id]; if (!t) return;
+    if (t.repeat && t.series && t.doneAt){
+      // remove the next copy that completing this one created, as long as it hasn't been changed
+      seriesOf(t.series).filter(x => x.id !== id && !x.done && x.occ && x.date === x.occ && !x.postponed &&
+        Math.abs((x.createdAt||0) - t.doneAt) < 120000).forEach(x => store.remove(x.id));
+    }
+    update(id, {done:false, doneAt:null, skipped:false});
+    if (openId === id) openId = null;
+  }
   function skipTask(id){
     const t = tasks[id]; if (!t) return;
     update(id, {done:true, skipped:true});
@@ -800,7 +814,7 @@ import { firebaseConfig } from "./config.js";
       today: all.filter(t=>t.date===t0).sort(byP),
       upcoming: all.filter(t=>t.date && t.date > t0).sort((a,b)=>a.date.localeCompare(b.date)||byP(a,b)),
       unscheduled: all.filter(t=>!t.date).sort(byP),
-      doneToday: Object.values(tasks).filter(t=>t.done && !t.skipped && t.doneAt && ymd(new Date(t.doneAt))===t0).length
+      doneList: Object.values(tasks).filter(t=>t.done && !t.skipped && t.doneAt && ymd(new Date(t.doneAt))===t0).sort((a,b)=>b.doneAt-a.doneAt)
     };
   }
 
@@ -816,8 +830,11 @@ import { firebaseConfig } from "./config.js";
     if (t.notes) meta.push('<span>Has notes</span>');
     if (t.postponed) meta.push('<span>Moved '+t.postponed+'×</span>');
     const open = openId===t.id;
-    let h = '<div class="task p-'+t.priority+(open?' open':'')+'" data-id="'+t.id+'">'+
-      '<div class="trow">'+(mode==='overdue'?'':'<span class="grip" aria-label="Drag to reorder" title="Drag to reorder"><svg width="12" height="18" viewBox="0 0 12 18" aria-hidden="true"><g fill="currentColor"><circle cx="3" cy="3" r="1.6"/><circle cx="9" cy="3" r="1.6"/><circle cx="3" cy="9" r="1.6"/><circle cx="9" cy="9" r="1.6"/><circle cx="3" cy="15" r="1.6"/><circle cx="9" cy="15" r="1.6"/></g></svg></span>')+'<button class="check" data-act="done" aria-label="Mark done: '+esc(t.title)+'"></button>'+
+    const doneMode = mode==='done';
+    const tick = '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    let h = '<div class="task p-'+t.priority+(open?' open':'')+(doneMode?' is-done':'')+'" data-id="'+t.id+'">'+
+      '<div class="trow">'+(mode==='overdue'||doneMode?'':'<span class="grip" aria-label="Drag to reorder" title="Drag to reorder"><svg width="12" height="18" viewBox="0 0 12 18" aria-hidden="true"><g fill="currentColor"><circle cx="3" cy="3" r="1.6"/><circle cx="9" cy="3" r="1.6"/><circle cx="3" cy="9" r="1.6"/><circle cx="9" cy="9" r="1.6"/><circle cx="3" cy="15" r="1.6"/><circle cx="9" cy="15" r="1.6"/></g></svg></span>')+(doneMode ? '<button class="check" data-act="undone" aria-label="Mark not done: '+esc(t.title)+'">'+tick+'</button>'
+                : '<button class="check" data-act="done" aria-label="Mark done: '+esc(t.title)+'"></button>')+
       '<button class="tmain" data-act="toggle" aria-expanded="'+open+'"><span class="ttitle">'+esc(t.title)+'</span>'+
       (meta.length?'<span class="meta">'+meta.join('')+'</span>':'')+'</button><button class="chevbtn" data-act="toggle" tabindex="-1" aria-hidden="true">'+chev+'</button></div>';
     if (mode==='overdue'){
@@ -828,7 +845,13 @@ import { firebaseConfig } from "./config.js";
         (t.repeat ? '<button class="b danger" data-act="skip" style="margin-left:auto">Skip</button>'
                   : '<button class="b danger" data-act="del" style="margin-left:auto">Delete</button>')+'</div></div>';
     }
-    if (open){
+    if (open && doneMode){
+      h += '<div class="detail">'+
+        '<div style="display:flex;flex-direction:column;gap:6px"><label class="lbl" for="notes-'+t.id+'">Notes</label>'+
+        '<textarea id="notes-'+t.id+'" data-act="notes" placeholder="Add a note">'+esc(t.notes||'')+'</textarea></div>'+
+        '<div class="btns"><button class="b" data-act="undone">Mark not done</button>'+
+        '<button class="b danger" data-act="del" style="margin-left:auto">Delete task</button></div></div>';
+    } else if (open){
       h += '<div class="detail">'+
         '<div style="display:flex;flex-direction:column;gap:6px"><label class="lbl" for="notes-'+t.id+'">Notes</label>'+
         '<textarea id="notes-'+t.id+'" data-act="notes" placeholder="Add a note">'+esc(t.notes||'')+'</textarea></div>'+
@@ -896,10 +919,12 @@ import { firebaseConfig } from "./config.js";
       }
       h += prioGroups(b.today,'today');
       if (!b.today.length && !b.overdue.length){
-        h += '<div class="empty"><strong>'+(b.doneToday?'Today is clear':'No tasks today')+'</strong>'+
-          (b.doneToday?'<span>'+b.doneToday+' finished today.</span>':'<span>Type a task below and tap Today.</span>')+'</div>';
-      } else if (b.doneToday){
-        h += '<p class="meta" style="justify-content:center">'+b.doneToday+' finished today</p>';
+        h += '<div class="empty"><strong>'+(b.doneList.length?'Today is clear':'No tasks today')+'</strong>'+
+          (b.doneList.length?'':'<span>Type a task below and tap Today.</span>')+'</div>';
+      }
+      if (b.doneList.length){
+        h += '<section class="group done-group"><h3 class="gh"><span class="dot" style="background:var(--muted)"></span>Done today <span class="n">'+b.doneList.length+'</span></h3>'+
+          b.doneList.map(t=>taskHTML(t,'done')).join('')+'</section>';
       }
     } else if (view==='upcoming'){
       const days = {};
@@ -938,6 +963,7 @@ import { firebaseConfig } from "./config.js";
     const id = card.dataset.id, t0 = today();
     switch(el.dataset.act){
       case 'done': { const before = tasks[id]; update(id,{done:true,doneAt:Date.now()}); if(openId===id) openId=null; lastDeleted=null; toastDone(id, afterFinish(before), 'Done'); break; }
+      case 'undone': markNotDone(id); break;
       case 'skip': skipTask(id); break;
       case 'del-series': deleteSeries(id); break;
       case 'rep-day': {
