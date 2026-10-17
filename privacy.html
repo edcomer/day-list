@@ -28,7 +28,10 @@ a{color:var(--accent)}
 <p>When you sign in with Google, Day List receives your name, email address and profile picture from Google. It uses them only to identify your account and show who is signed in.</p>
 
 <h2>Your tasks</h2>
-<p>Tasks you create are stored in Google Firebase (Cloud Firestore) under your account. Security rules allow only you, while signed in, to read or change them. The demo mode stores sample tasks only in your own browser.</p>
+<p>Tasks you create are stored in Google Firebase (Cloud Firestore) under your account. Within the app, security rules allow only you, while signed in, to read or change them. The demo mode stores sample tasks only in your own browser.</p>
+
+<h2>Who can see your tasks</h2>
+<p><strong>Your tasks are not private from the app's owner.</strong> Day List is a personal project. Other people who use the app cannot see your tasks, but the person who runs Day List can view everything stored in its database through Firebase's administration tools. Don't save anything in Day List that you wouldn't want the owner to read. Calendar appointments are the exception: they are never stored in the database, so the owner cannot see them.</p>
 
 <h2>Google Calendar</h2>
 <p>If you choose to connect Google Calendar, Day List asks for read-only access to your calendar so it can show your appointments next to your tasks. It never creates, changes or deletes calendar events. Appointment details are kept only in your browser on your own device, so they can be shown when you are offline. They are never sent to any server other than Google's. You can disconnect at any time from the account menu, or remove access in your Google Account under Security, Third-party connections.</p>
