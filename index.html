@@ -93,6 +93,7 @@ body.is-dragging{user-select:none;-webkit-user-select:none}
 .task.is-done .ttitle{text-decoration:line-through;color:var(--muted)}
 .task.is-done .check{background:var(--pc);color:var(--surface)}
 .task.is-done.open{opacity:1}
+.tedit{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:var(--bg);font-size:1rem}
 .chevbtn{flex:none;border:0;background:transparent;padding:6px;margin:-6px -8px -6px -4px;border-radius:8px;display:grid;place-items:center}
 .chevbtn:hover{background:var(--accent-soft)}
 .detail{border-top:1px solid var(--line);padding:12px;display:flex;flex-direction:column;gap:12px}
@@ -848,12 +849,16 @@ import { firebaseConfig } from "./config.js";
     }
     if (open && doneMode){
       h += '<div class="detail">'+
+        '<div style="display:flex;flex-direction:column;gap:6px"><label class="lbl" for="title-'+t.id+'">Task</label>'+
+        '<input class="tedit" id="title-'+t.id+'" data-act="title" maxlength="200" enterkeyhint="done" value="'+esc(t.title)+'"></div>'+
         '<div style="display:flex;flex-direction:column;gap:6px"><label class="lbl" for="notes-'+t.id+'">Notes</label>'+
         '<textarea id="notes-'+t.id+'" data-act="notes" placeholder="Add a note">'+esc(t.notes||'')+'</textarea></div>'+
         '<div class="btns"><button class="b" data-act="undone">Mark not done</button>'+
         '<button class="b danger" data-act="del" style="margin-left:auto">Delete task</button></div></div>';
     } else if (open){
       h += '<div class="detail">'+
+        '<div style="display:flex;flex-direction:column;gap:6px"><label class="lbl" for="title-'+t.id+'">Task</label>'+
+        '<input class="tedit" id="title-'+t.id+'" data-act="title" maxlength="200" enterkeyhint="done" value="'+esc(t.title)+'"></div>'+
         '<div style="display:flex;flex-direction:column;gap:6px"><label class="lbl" for="notes-'+t.id+'">Notes</label>'+
         '<textarea id="notes-'+t.id+'" data-act="notes" placeholder="Add a note">'+esc(t.notes||'')+'</textarea></div>'+
         '<div style="display:flex;flex-direction:column;gap:6px"><span class="lbl">Priority</span><div class="btns">'+
@@ -947,7 +952,7 @@ import { firebaseConfig } from "./config.js";
     const list = document.getElementById('list');
     const focused = document.activeElement && document.activeElement.id;
     list.innerHTML = h;
-    if (focused && focused.startsWith('notes-')){ const el=document.getElementById(focused); if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length);} }
+    if (focused && (focused.startsWith('notes-') || focused.startsWith('title-'))){ const el=document.getElementById(focused); if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length);} }
   }
 
   // ---------- events ----------
@@ -1002,6 +1007,11 @@ import { firebaseConfig } from "./config.js";
   list.addEventListener('change', e=>{
     const el=e.target, card=el.closest('.task'); if(!card) return;
     const id = card.dataset.id, t = tasks[id];
+    if (t && el.dataset.act==='title'){
+      clearTimeout(titleTimers[id]);
+      if (!el.value.trim()) { el.value = t.title; return; }
+      saveTitle(id, el.value); return;
+    }
     if (t && el.dataset.act==='rep-type'){
       const type = el.value;
       setRepeat(id, type==='none' ? null : buildRepeat(type, (t.repeat && t.repeat.start) || t.date || today(), t.repeat));
@@ -1017,15 +1027,32 @@ import { firebaseConfig } from "./config.js";
     if (el.dataset.act==='s-date') schedule(card.dataset.id, el.value);
     if (el.dataset.act==='d-date') schedule(card.dataset.id, el.value, true);
   });
-  let noteTimers={};
+  let noteTimers={}, titleTimers={};
+  // renaming a task: saves as you type; for a repeating task the new name applies to every open copy
+  function saveTitle(id, value){
+    const v = value.trim(), t = tasks[id];
+    if (!t || !v || v === t.title) return;
+    const targets = t.series && !t.done ? seriesOf(t.series).filter(x => !x.done) : [t];
+    targets.forEach(x => update(x.id, {title: v}));
+  }
   list.addEventListener('input', e=>{
-    const el=e.target; if(el.dataset.act!=='notes') return;
+    const el=e.target;
+    if (el.dataset.act==='title'){
+      const id=el.closest('.task').dataset.id;
+      clearTimeout(titleTimers[id]);
+      titleTimers[id]=setTimeout(()=>saveTitle(id, el.value), 700);
+      return;
+    }
+    if(el.dataset.act!=='notes') return;
     const id=el.closest('.task').dataset.id;
     clearTimeout(noteTimers[id]);
     noteTimers[id]=setTimeout(()=>{ if(tasks[id] && tasks[id].notes!==el.value) update(id,{notes:el.value}); }, 700);
   });
 
   // drag to reorder, within a priority group or across High / Medium / Low (mouse and touch)
+  list.addEventListener('keydown', e=>{
+    if (e.key==='Enter' && e.target.dataset && e.target.dataset.act==='title'){ e.preventDefault(); e.target.blur(); }
+  });
   list.addEventListener('pointerdown', e=>{
     const grip = e.target.closest('.grip'); if(!grip) return;
     const card = grip.closest('.task'), container = card.parentElement.parentElement;
