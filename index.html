@@ -261,6 +261,21 @@ body{margin:0}
     <div class="calfoot"><button type="button" class="b" id="menuClose">Close</button></div>
   </div>
 </div>
+<div class="calwrap" id="calset" hidden>
+  <div class="cal menu" role="dialog" aria-modal="true" aria-labelledby="calsetTitle">
+    <h2 id="calsetTitle">Calendar</h2>
+    <p id="calsetStatus"></p>
+    <label class="lbl" for="calLinkInput">Calendar link</label>
+    <input class="tedit" id="calLinkInput" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec">
+    <p class="small">A calendar link stays connected. <a href="https://github.com/edcomer/day-list/blob/main/calendar-link.md" target="_blank" rel="noopener">How to make one</a></p>
+    <p class="small err" id="calsetMsg"></p>
+    <button type="button" class="mi" id="calLinkSave">Save link</button>
+    <button type="button" class="mi" id="calLinkRemove" hidden>Remove link</button>
+    <button type="button" class="mi" id="calGoogle">Connect with Google sign-in instead</button>
+    <button type="button" class="mi" id="calOff" hidden>Disconnect calendar</button>
+    <div class="calfoot"><button type="button" class="b" id="calsetClose">Close</button></div>
+  </div>
+</div>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut, reauthenticateWithPopup, reauthenticateWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -312,7 +327,7 @@ import { firebaseConfig } from "./config.js";
     document.getElementById('signin').disabled = !configured;
     document.getElementById('gateMsg').textContent = msg || (configured ? '' : 'Sign-in is not set up yet. The demo works now.');
   }
-  function stopCloud(){ if (unsub){ unsub(); unsub = null; } }
+  function stopCloud(){ if (unsub){ unsub(); unsub = null; } if (unsubSettings){ unsubSettings(); unsubSettings = null; } calLink = null; }
 
   // sample tasks for the demo, dated relative to today
   function demoTasks(){
@@ -367,6 +382,7 @@ import { firebaseConfig } from "./config.js";
       remove(id){ delete tasks[id]; render(); fsDeleteDoc(fsDoc(col, id)).catch(writeErr); }
     };
     calLoad();
+    watchCalSettings();
     if (pendingCal && pendingCal.uid === user.uid){ calTokenFrom(pendingCal.result); pendingCal = null; }
     else calMaybeRefresh();
     if (calValid() && !cal.fetchedAt) calFetch();
@@ -421,6 +437,21 @@ import { firebaseConfig } from "./config.js";
   let cal = blankCal(), calBusy = false, calExpanded = {}, pendingCal = null;
   const calKey = () => currentUser ? 'daylist.cal.' + currentUser.uid : null;
   const calValid = () => !!cal.token && Date.now() < cal.exp - 60000;
+  // Calendar link: a small Google Apps Script in the person's own account that returns their
+  // appointments. Unlike Google sign-in access, it never expires. Saved in their account settings.
+  let calLink = null, unsubSettings = null;
+  const calUsable = () => !!calLink || calValid();
+  const settingsRef = () => fsDoc(fb.db, 'users', currentUser.uid, 'settings', 'calendar');
+  function watchCalSettings(){
+    if (unsubSettings) unsubSettings();
+    unsubSettings = fsOnSnapshot(settingsRef(), snap => {
+      const url = snap.exists() ? (snap.data().url || null) : null;
+      if (url === calLink) return;
+      calLink = url;
+      if (calLink){ cal.connected = true; cal.error = null; cal.dismissed = false; calSave(); calFetch(); }
+      render(); updateCalSettings();
+    }, () => {});
+  }
   function calLoad(){ cal = blankCal(); calExpanded = {}; const k = calKey(); if (!k) return; try { Object.assign(cal, JSON.parse(localStorage.getItem(k) || '{}')); } catch(e){} }
   function calSave(){ const k = calKey(); if (!k) return; try { localStorage.setItem(k, JSON.stringify(cal)); } catch(e){} }
 
@@ -456,10 +487,27 @@ import { firebaseConfig } from "./config.js";
     const tok = cal.token;
     if (tok) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(tok), { method:'POST' }).catch(()=>{});
     const k = calKey(); try { if (k) localStorage.removeItem(k); } catch(e){}
-    cal = blankCal(); cal.dismissed = true; calSave(); render(); toast('Calendar disconnected', false);
+    if (calLink && currentUser) fsDeleteDoc(settingsRef()).catch(()=>{});
+    calLink = null;
+    cal = blankCal(); cal.dismissed = true; calSave(); render(); updateCalSettings(); toast('Calendar disconnected', false);
+  }
+  async function calFetchLink(){
+    calBusy = true;
+    try {
+      const res = await fetch(calLink + (calLink.includes('?') ? '&' : '?') + 'days=' + CAL_DAYS_AHEAD);
+      const j = await res.json();
+      if (!j || !j.ok || !Array.isArray(j.events)) throw new Error('bad');
+      cal.events = j.events.map(e => ({ title: e.title || '(No title)', allDay: !!e.allDay, start: e.start, end: e.end || null, color: CAL_COLORS[e.color] || null }));
+      cal.fetchedAt = Date.now(); cal.error = null; cal.connected = true;
+    } catch(e){
+      if (navigator.onLine !== false) cal.error = 'link';   // offline: keep the last appointments quietly
+    }
+    calSave(); calBusy = false; render();
   }
   async function calFetch(){
-    if (mode !== 'cloud' || !calValid() || calBusy) { render(); return; }
+    if (mode !== 'cloud' || calBusy) { render(); return; }
+    if (calLink) return calFetchLink();
+    if (!calValid()) { render(); return; }
     calBusy = true;
     const from = parse(today()), to = parse(addDays(today(), CAL_DAYS_AHEAD));
     const url = 'https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&maxResults=250' +
@@ -486,7 +534,7 @@ import { firebaseConfig } from "./config.js";
     } catch(e){ /* offline: keep showing the last appointments loaded */ }
     calBusy = false; render();
   }
-  function calMaybeRefresh(maxAge){ if (mode === 'cloud' && calValid() && Date.now() - (cal.fetchedAt || 0) > (maxAge || CAL_REFRESH_MS)) calFetch(); }
+  function calMaybeRefresh(maxAge){ if (mode === 'cloud' && calUsable() && Date.now() - (cal.fetchedAt || 0) > (maxAge || CAL_REFRESH_MS)) calFetch(); }
 
   // sample appointments for the demo, relative to now
   function demoEvents(){
@@ -518,7 +566,7 @@ import { firebaseConfig } from "./config.js";
         '<button type="button" class="lnk" data-cal="dismiss" style="color:var(--muted)">Not now</button></div>';
     }
     const evs = eventsOn(s), isToday = s === today(), now = Date.now();
-    const stale = mode === 'cloud' && !calValid();
+    const stale = mode === 'cloud' && !calUsable();
     if (mini && !evs.length) return '';
     let nextMarked = false;
     const rows = evs.map(e => {
@@ -542,6 +590,7 @@ import { firebaseConfig } from "./config.js";
     if (!mini){
       const action = cal.error === 'perm' ? '<button type="button" class="lnk" data-cal="connect">Allow calendar access</button>'
                    : cal.error === 'api' ? '<button type="button" class="lnk" data-cal="retry">Try again</button>'
+                   : cal.error === 'link' ? '<button type="button" class="lnk" data-cal="settings">Check link</button>'
                    : stale ? '<button type="button" class="lnk" data-cal="connect">Reconnect</button>'
                    : mode === 'cloud' ? '<button type="button" class="lnk" data-cal="refresh">' + (calBusy ? 'Updating…' : 'Refresh') + '</button>' : '';
       head = '<div class="ch">' + calIcon + 'Calendar <span class="n">' + (evs.length || '') + '</span>' + action + '</div>';
@@ -549,6 +598,7 @@ import { firebaseConfig } from "./config.js";
     const body = shown.map(r => r.html).join('') ||
       (mini ? '' : '<div class="none">' + (cal.error === 'perm' ? 'Day List needs permission to read your calendar. Tap Allow calendar access and check the calendar box.'
         : cal.error === 'api' ? 'Google Calendar could not be read. Google says: ' + esc(cal.errorMsg || 'unknown error')
+        : cal.error === 'link' ? 'Your calendar link did not answer. Tap Check link.'
         : 'Nothing on your calendar today.') + '</div>');
     return '<section class="calstrip' + (mini ? ' mini' : '') + '">' + head + body + more + '</section>';
   }
@@ -562,7 +612,8 @@ import { firebaseConfig } from "./config.js";
     const act = el.dataset.cal;
     if (act === 'connect') calConnect();
     if (act === 'refresh'){ calFetch(); toast('Calendar updated', false); }
-    if (act === 'retry'){ if (calValid()) { cal.error = null; calFetch(); } else calConnect(); }
+    if (act === 'retry'){ if (calUsable()) { cal.error = null; calFetch(); } else calConnect(); }
+    if (act === 'settings') openCalSettings();
     if (act === 'dismiss'){ cal.dismissed = true; calSave(); render(); }
     if (act === 'more'){ calExpanded[el.dataset.day] = true; render(); }
     if (act === 'less'){ calExpanded[el.dataset.day] = false; render(); }
@@ -579,7 +630,7 @@ import { firebaseConfig } from "./config.js";
     document.getElementById('miReset').hidden = !demo;
     const miCal = document.getElementById('miCal');
     miCal.hidden = mode !== 'cloud';
-    miCal.textContent = cal.connected ? 'Disconnect Google Calendar' : 'Connect Google Calendar';
+    miCal.textContent = 'Calendar settings';
     document.getElementById('miOut').textContent = demo ? 'Leave the demo' : 'Sign out';
     document.getElementById('miInstall').hidden = !installEvt;
     const av = document.getElementById('acct');
@@ -592,7 +643,53 @@ import { firebaseConfig } from "./config.js";
   menuwrap.addEventListener('click', e => { if (e.target === menuwrap) closeMenu(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menuwrap.hidden) closeMenu(); });
   document.getElementById('miOut').addEventListener('click', leave);
-  document.getElementById('miCal').addEventListener('click', () => { closeMenu(); if (cal.connected) calDisconnect(); else calConnect(); });
+  document.getElementById('miCal').addEventListener('click', () => { closeMenu(); openCalSettings(); });
+
+  // ---------- calendar settings dialog ----------
+  const calset = document.getElementById('calset');
+  function updateCalSettings(){
+    if (!calset) return;
+    const st = document.getElementById('calsetStatus');
+    st.textContent = calLink ? 'Connected with your calendar link. It stays connected.'
+      : calValid() ? 'Connected through Google sign-in. Google asks again about once an hour.'
+      : cal.connected ? 'Google sign-in access has expired. Reconnect, or set up a calendar link so it stays connected.'
+      : 'Not connected.';
+    document.getElementById('calLinkRemove').hidden = !calLink;
+    document.getElementById('calGoogle').hidden = !!calLink;
+    document.getElementById('calOff').hidden = !cal.connected && !calLink;
+    const inp = document.getElementById('calLinkInput');
+    if (document.activeElement !== inp) inp.value = calLink || '';
+  }
+  function openCalSettings(){ document.getElementById('calsetMsg').textContent = ''; updateCalSettings(); calset.hidden = false; }
+  function closeCalSettings(){ calset.hidden = true; }
+  document.getElementById('calsetClose').addEventListener('click', closeCalSettings);
+  calset.addEventListener('click', e => { if (e.target === calset) closeCalSettings(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !calset.hidden) closeCalSettings(); });
+  document.getElementById('calGoogle').addEventListener('click', () => { closeCalSettings(); calConnect(); });
+  document.getElementById('calOff').addEventListener('click', () => { closeCalSettings(); calDisconnect(); });
+  document.getElementById('calLinkRemove').addEventListener('click', async () => {
+    try { await fsDeleteDoc(settingsRef()); } catch(e){}
+    calLink = null; cal = blankCal(); calSave(); render(); updateCalSettings(); toast('Calendar link removed', false);
+  });
+  document.getElementById('calLinkSave').addEventListener('click', async () => {
+    const msg = document.getElementById('calsetMsg');
+    const url = document.getElementById('calLinkInput').value.trim();
+    if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)){ msg.textContent = 'That doesn\'t look like a calendar link. It should start with https://script.google.com/'; return; }
+    msg.textContent = 'Checking the link…';
+    try {
+      const res = await fetch(url + (url.includes('?') ? '&' : '?') + 'days=1');
+      const j = await res.json();
+      if (!j || !j.ok) throw new Error('bad');
+    } catch(e){
+      msg.textContent = 'The link didn\'t return your calendar. Check that the deployment is a Web app with access set to "Anyone", then copy the Web app URL again.';
+      return;
+    }
+    try { await fsSetDoc(settingsRef(), { url, savedAt: Date.now() }); }
+    catch(e){ msg.textContent = 'The link works, but it could not be saved. Check your connection and try again.'; return; }
+    msg.textContent = '';
+    calLink = url; cal.connected = true; cal.error = null; cal.dismissed = false; calSave();
+    closeCalSettings(); calFetch(); toast('Calendar linked', false);
+  });
   document.getElementById('miReset').addEventListener('click', () => { closeMenu(); resetDemo(); });
   document.getElementById('miInstall').addEventListener('click', async () => {
     if (!installEvt) return; closeMenu(); installEvt.prompt(); try { await installEvt.userChoice; } catch(e){} installEvt = null; setAccount();
@@ -1177,7 +1274,7 @@ import { firebaseConfig } from "./config.js";
 
   // re-check the date when the app comes back to the foreground (handles midnight rollover)
   let lastDay = today();
-  function checkDay(){ if (today()!==lastDay){ lastDay=today(); if (store && loaded) maintainAll(); calExpanded = {}; if (mode==='cloud' && calValid()) cal.fetchedAt = 0; } calMaybeRefresh(); render(); }
+  function checkDay(){ if (today()!==lastDay){ lastDay=today(); if (store && loaded) maintainAll(); calExpanded = {}; if (mode==='cloud' && calUsable()) cal.fetchedAt = 0; } calMaybeRefresh(); render(); }
   document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ calMaybeRefresh(60000); checkDay(); } });
   setInterval(()=>{ if(!document.hidden) checkDay(); }, 60000);
 
