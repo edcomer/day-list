@@ -7,14 +7,15 @@ Do this once, on a computer, signed in to the same Google account as your calend
 1. Go to **script.google.com** and click **New project**.
 2. Click **Untitled project** at the top and rename it `Day List calendar`.
 3. Delete everything in the code box, then paste in the contents of [calendar-script.gs](calendar-script.gs). Click the **Save** icon.
-4. Click **Deploy → New deployment**. Click the gear next to "Select type" and choose **Web app**.
+4. **Limit the script to read-only.** Click the gear (**Project Settings**) in the left bar and check **Show "appsscript.json" manifest file in editor**. Go back to the code view (the **< >** icon), open **appsscript.json**, replace everything in it with the contents of [appsscript.json](appsscript.json), and click **Save**. Without this, Google gives the script permission to change your calendar as well as read it, even though it only reads.
+5. Click **Deploy → New deployment**. Click the gear next to "Select type" and choose **Web app**.
    - **Description:** `Day List`
    - **Execute as:** Me
    - **Who has access:** Anyone
    - Click **Deploy**.
-5. Google asks you to **Authorize access**. Choose your account. When it says Google hasn't verified the app, click **Advanced → Go to Day List calendar (unsafe)**, then **Allow**. This is your own script asking to read your own calendar.
-6. Copy the **Web app URL**. It starts with `https://script.google.com/macros/s/` and ends with `/exec`.
-7. In Day List, tap your initial button → **Calendar settings**, paste the URL into **Calendar link**, and tap **Save link**.
+6. Google asks you to **Authorize access**. Choose your account. When it says Google hasn't verified the app, click **Advanced → Go to Day List calendar (unsafe)**, then **Allow**. The permission screen should say the script can *view* your calendars. This is your own script asking to read your own calendar.
+7. Copy the **Web app URL**. It starts with `https://script.google.com/macros/s/` and ends with `/exec`.
+8. In Day List, tap your initial button → **Calendar settings**, paste the URL into **Calendar link**, and tap **Save link**.
 
 The link is saved to your account, so it works on your phone and your computer.
 
