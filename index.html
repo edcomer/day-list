@@ -72,8 +72,9 @@ main{display:flex;flex-direction:column;gap:22px;padding-top:8px}
 .task{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);border-left:4px solid var(--pc)}
 .task.p-high{--pc:var(--high)} .task.p-med{--pc:var(--med)} .task.p-low{--pc:var(--low)}
 .trow{display:flex;align-items:flex-start;gap:10px;padding:11px 12px}
-.grip{flex:none;color:var(--muted);opacity:.6;cursor:grab;touch-action:none;padding:4px 2px;margin:-2px -4px -2px -6px;display:grid;place-items:center;align-self:center;user-select:none;-webkit-user-select:none}
+.grip{flex:none;color:var(--muted);opacity:.6;cursor:grab;touch-action:pan-y;-webkit-touch-callout:none;padding:4px 2px;margin:-2px -4px -2px -6px;display:grid;place-items:center;align-self:center;user-select:none;-webkit-user-select:none}
 .grip:hover{opacity:1}
+.task.pressing{transform:scale(.985);transition:transform .3s}
 .task.dragging{position:relative;z-index:4;box-shadow:0 8px 24px rgba(0,0,0,.18);cursor:grabbing}
 .task.dragging .grip{cursor:grabbing;opacity:1}
 body.is-dragging{user-select:none;-webkit-user-select:none}
@@ -1150,19 +1151,37 @@ import { firebaseConfig } from "./config.js";
   list.addEventListener('keydown', e=>{
     if (e.key==='Enter' && e.target.dataset && e.target.dataset.act==='title'){ e.preventDefault(); e.target.blur(); }
   });
+  // With a mouse, dragging starts at once. With a finger, the handle has to be held still briefly,
+  // so a swipe that happens to start on the handle scrolls the list instead of moving the task.
+  const HOLD_MS = 300, HOLD_SLOP = 8;
+  let pending = null;
+  function cancelPending(){ if (pending){ clearTimeout(pending.timer); pending.card.classList.remove('pressing'); pending = null; } }
   list.addEventListener('pointerdown', e=>{
     const grip = e.target.closest('.grip'); if(!grip) return;
+    if (e.pointerType === 'mouse'){ e.preventDefault(); startDrag(grip, e.pointerId, e.clientY); return; }
+    cancelPending();
+    const card = grip.closest('.task'); card.classList.add('pressing');
+    pending = { grip, card, id: e.pointerId, x: e.clientX, y: e.clientY, timer: setTimeout(()=>{
+      if (!pending) return;
+      const p = pending; pending = null; p.card.classList.remove('pressing');
+      try { if (navigator.vibrate) navigator.vibrate(15); } catch(_){}
+      startDrag(p.grip, p.id, p.y);
+    }, HOLD_MS) };
+  });
+  list.addEventListener('contextmenu', e=>{ if (e.target.closest('.grip')) e.preventDefault(); });
+  // once a task is picked up, stop the page from scrolling under the finger
+  list.addEventListener('touchmove', e=>{ if (drag) e.preventDefault(); }, { passive:false });
+  function startDrag(grip, pointerId, clientY){
     const card = grip.closest('.task'), container = card.parentElement.parentElement;
-    e.preventDefault();
-    try { grip.setPointerCapture(e.pointerId); } catch(_){}
+    try { grip.setPointerCapture(pointerId); } catch(_){}
     const before = card.getBoundingClientRect().top;
     container.classList.add('drop-active');           // reveals empty priority groups as drop zones
     card.classList.add('dragging'); document.body.classList.add('is-dragging');
     const shift = card.getBoundingClientRect().top - before;
-    drag = {card, container, startY: e.clientY + window.scrollY + shift, lastY: e.clientY, moved:false, raf:0};
+    drag = {card, container, startY: clientY + window.scrollY + shift, lastY: clientY, moved:false, raf:0};
     card.style.transform = 'translateY('+(-shift)+'px)';
     drag.raf = requestAnimationFrame(autoScroll);
-  });
+  }
   function positionDrag(cy){
     const {card, container} = drag;
     const groups = [...container.querySelectorAll(':scope > .group[data-p]')];
@@ -1198,6 +1217,10 @@ import { firebaseConfig } from "./config.js";
     drag.raf = requestAnimationFrame(autoScroll);
   }
   list.addEventListener('pointermove', e=>{
+    if (pending && e.pointerId === pending.id){
+      if (Math.abs(e.clientX - pending.x) > HOLD_SLOP || Math.abs(e.clientY - pending.y) > HOLD_SLOP) cancelPending();
+      else { pending.y = e.clientY; }
+    }
     if(!drag) return;
     drag.lastY = e.clientY;
     positionDrag(e.clientY);
@@ -1221,8 +1244,8 @@ import { firebaseConfig } from "./config.js";
     }
     render();
   }
-  list.addEventListener('pointerup', endDrag);
-  list.addEventListener('pointercancel', endDrag);
+  list.addEventListener('pointerup', ()=>{ cancelPending(); endDrag(); });
+  list.addEventListener('pointercancel', ()=>{ cancelPending(); endDrag(); });
 
   // quick add
   const form=document.getElementById('addForm'), input=document.getElementById('newTitle');
