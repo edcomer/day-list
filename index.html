@@ -1048,9 +1048,21 @@ import { firebaseConfig } from "./config.js";
     }
     if (!loaded || drag) return;
     const list = document.getElementById('list');
-    const focused = document.activeElement && document.activeElement.id;
+    // If the person is typing in a task's name or notes, keep exactly what they've typed (even
+    // the part not saved yet), where their cursor is, and how far the box is scrolled.
+    const act = document.activeElement;
+    const editing = act && act.id && (act.id.startsWith('notes-') || act.id.startsWith('title-'))
+      ? { id: act.id, value: act.value, start: act.selectionStart, end: act.selectionEnd, dir: act.selectionDirection, top: act.scrollTop } : null;
     list.innerHTML = h;
-    if (focused && (focused.startsWith('notes-') || focused.startsWith('title-'))){ const el=document.getElementById(focused); if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length);} }
+    if (editing){
+      const el = document.getElementById(editing.id);
+      if (el){
+        el.value = editing.value;
+        el.focus({ preventScroll: true });
+        try { el.setSelectionRange(editing.start, editing.end, editing.dir || 'none'); } catch(_){}
+        el.scrollTop = editing.top;
+      }
+    }
   }
 
   // ---------- events ----------
